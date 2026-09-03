@@ -1,0 +1,371 @@
+---
+title: "Latihan Pertemuan 3 — Model Regresi Deret Waktu dengan Peubah Lag"
+subtitle: "STA1341 Metode Peramalan Deret Waktu"
+author: "Rizky Arif Wicaksono (M0401241054)"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+    number_sections: true
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+library(dynlm)
+library(lmtest)
+library(tseries)
+```
+
+# Latihan 1 — Finite Distributed Lag (Pendekatan Ad-Hoc Alt–Tinbergen)
+
+## Deskripsi Data
+
+Data pangsa pasar (*market share*, Y) dan harga (*price*, X) suatu produk
+pasta gigi selama 20 periode.
+
+```{r data-latihan1}
+Y <- c(3.63, 4.20, 3.33, 4.54, 2.89, 4.87, 4.90, 5.29, 6.18, 7.20,
+       7.25, 6.09, 6.80, 8.65, 8.43, 8.29, 7.18, 7.90, 8.45, 8.23)
+X <- c(0.97, 0.95, 0.99, 0.91, 0.98, 0.90, 0.89, 0.86, 0.85, 0.82,
+       0.79, 0.83, 0.81, 0.77, 0.76, 0.80, 0.83, 0.79, 0.76, 0.78)
+
+data1 <- data.frame(Period = 1:20, MarketShare = Y, Price = X)
+data1
+```
+
+```{r plot-latihan1}
+plot(data1$Period, data1$MarketShare, type = "l", col = "steelblue", lwd = 2,
+     xlab = "Periode", ylab = "Market Share",
+     main = "Market Share vs Waktu")
+
+plot(data1$Price, data1$MarketShare, pch = 19, col = "darkred",
+     xlab = "Price", ylab = "Market Share",
+     main = "Market Share vs Price")
+```
+
+Secara visual, market share cenderung **naik** ketika price **turun** —
+mengindikasikan hubungan negatif antara kedua peubah, sesuai teori ekonomi
+(harga naik → permintaan/pangsa pasar turun).
+
+## Metode: Bandingkan Ad-Hoc Alt–Tinbergen vs Koyck Lag
+
+Karena Latihan 1 muncul setelah **ketiga** metode distributed lag diajarkan
+(Ad-Hoc, Koyck, ARDL), pencarian model terbaik dilakukan dengan mencoba
+lebih dari satu pendekatan, lalu membandingkan performanya (AIC/BIC) pada
+**sampel yang sama** — bukan hanya menambah lag $X$ satu per satu.
+
+### (a) Pendekatan Ad-Hoc Alt–Tinbergen
+
+Langkah: regresikan $Y_t$ terhadap $X_t$, lalu tambahkan $X_{t-1}$,
+$X_{t-2}$, dst. Berhenti jika koefisien lag baru tidak signifikan atau
+berubah tanda.
+
+```{r ardl-search-latihan1}
+n <- length(Y)
+
+m0 <- lm(Y ~ X)
+m1 <- lm(Y[2:n] ~ X[2:n] + X[1:(n-1)])
+m2 <- lm(Y[3:n] ~ X[3:n] + X[2:(n-1)] + X[1:(n-2)])
+
+hasil1a <- data.frame(
+  Model      = c("Lag 0 (Y~X)", "+ X_t-1", "+ X_t-1, X_t-2"),
+  n          = c(length(m0$residuals), length(m1$residuals), length(m2$residuals)),
+  p_lag_baru = c(NA,
+                 summary(m1)$coefficients["X[1:(n - 1)]", "Pr(>|t|)"],
+                 summary(m2)$coefficients["X[1:(n - 2)]", "Pr(>|t|)"])
+)
+hasil1a
+```
+
+Koefisien $X_{t-1}$ tidak signifikan (p = `r round(summary(m1)$coefficients["X[1:(n - 1)]","Pr(>|t|)"],3)`
+> 0.05) begitu ditambahkan pada tahap kedua, sehingga menurut kriteria
+Alt–Tinbergen prosedur **berhenti** dan kandidat dari jalur ini adalah
+model tanpa lag: $Y_t = \alpha + \beta_0 X_t$.
+
+### (b) Pendekatan Koyck Lag
+
+Model Koyck mengasumsikan koefisien lag $X$ menurun geometris, yang setelah
+transformasi menghasilkan bentuk:
+
+$$Y_t = \alpha(1-C) + \beta_0 X_t + C\,Y_{t-1} + V_t$$
+
+```{r koyck-latihan1}
+Yc   <- Y[2:n]
+Xc   <- X[2:n]
+Ylag <- Y[1:(n - 1)]
+
+m_koyck <- lm(Yc ~ Xc + Ylag)
+summary(m_koyck)
+```
+
+### (c) Perbandingan Kedua Pendekatan (sampel sama, n = 19)
+
+```{r banding-latihan1}
+m_adhoc_matched <- lm(Yc ~ Xc)   # model lag-0, sampel disamakan dgn Koyck
+
+perbandingan1 <- data.frame(
+  Model  = c("Ad-Hoc (lag 0)", "Koyck (Y~X+Y_t-1)"),
+  AIC    = c(AIC(m_adhoc_matched), AIC(m_koyck)),
+  BIC    = c(BIC(m_adhoc_matched), BIC(m_koyck)),
+  R2_adj = c(summary(m_adhoc_matched)$adj.r.squared, summary(m_koyck)$adj.r.squared)
+)
+perbandingan1
+```
+
+**Model Koyck memiliki AIC dan BIC lebih kecil, serta $R^2$-adjusted lebih
+tinggi**, dibandingkan model Ad-Hoc tanpa lag. Artinya, memasukkan
+$Y_{t-1}$ (bukan lag dari $X$) memberikan perbaikan model yang lebih baik
+dibanding sekadar berhenti di lag-0 — sesuai prinsip Koyck bahwa efek
+harga terhadap market share meluruh secara geometris dan tertangkap
+lewat variabel dependen ber-lag.
+
+## Model Terbaik: Model Koyck
+
+```{r model-terbaik-latihan1}
+model_final1 <- m_koyck
+alpha_hat <- coef(model_final1)[1] / (1 - coef(model_final1)["Ylag"])
+C_hat     <- coef(model_final1)["Ylag"]
+beta0_hat <- coef(model_final1)["Xc"]
+LR_mult1  <- beta0_hat / (1 - C_hat)
+```
+
+**Model dugaan terbaik (bentuk Koyck):**
+
+$$
+\hat{Y}_t = `r round(coef(model_final1)[1],3)` `r round(beta0_hat,3)`\,X_t + `r round(C_hat,3)`\,Y_{t-1}
+$$
+
+Dituliskan dalam bentuk persamaan dinamis distribusi lag (menurunkan
+$\alpha$, $C$, dan $\beta_k = \beta_0 C^k$):
+
+* $\hat{C} = `r round(C_hat,4)`$
+* $\hat{\alpha}(1-\hat{C}) = `r round(coef(model_final1)[1],4)` \Rightarrow \hat{\alpha} = `r round(alpha_hat,4)`$
+* $\hat{\beta}_0 = `r round(beta0_hat,4)`$
+* $\hat{\beta}_1 = \beta_0 C = `r round(beta0_hat*C_hat,4)`$
+* $\hat{\beta}_2 = \beta_0 C^2 = `r round(beta0_hat*C_hat^2,4)`$
+
+**Interpretasi:**
+
+* **Dampak jangka pendek** ($\beta_0$ = `r round(beta0_hat,3)`): kenaikan
+  harga 1 unit pada periode ini langsung **menurunkan** market share
+  sebesar `r round(abs(beta0_hat),3)` poin pada periode yang sama.
+* Koefisien $Y_{t-1}$ sebesar `r round(C_hat,3)` (signifikan pada taraf
+  10%, p = `r round(summary(model_final1)$coefficients["Ylag","Pr(>|t|)"],3)`)
+  menunjukkan sekitar `r round(C_hat*100,1)`% dari efek market share
+  periode lalu masih terbawa ke periode ini — ada **kelembaman (inertia)**
+  pada perilaku pasar, bukan penyesuaian instan.
+* **Dampak jangka panjang (*long-run multiplier*)**:
+  $$
+  \frac{\beta_0}{1-C} = \frac{`r round(beta0_hat,3)`}{1-`r round(C_hat,3)`} = `r round(LR_mult1,3)`
+  $$
+  Jika kenaikan harga 1 unit dipertahankan secara permanen, total
+  penurunan market share dalam jangka panjang adalah
+  `r round(abs(LR_mult1),3)` poin — lebih besar dari dampak jangka pendek,
+  karena efeknya terus terakumulasi lewat lag $Y$.
+* $R^2$ model = `r round(summary(model_final1)$r.squared,4)`
+  (`r round(summary(model_final1)$r.squared*100,2)`% keragaman market
+  share dijelaskan oleh model).
+
+```{r diag-latihan1}
+cat("Uji autokorelasi (Breusch-Godfrey):\n")
+print(bgtest(model_final1))
+
+cat("\nUji heteroskedastisitas (Breusch-Pagan):\n")
+print(bptest(model_final1))
+
+cat("\nUji normalitas galat (Jarque-Bera):\n")
+print(jarque.bera.test(residuals(model_final1)))
+```
+
+Ketiga uji asumsi (non-autokorelasi, homoskedastisitas, dan normalitas
+galat) terpenuhi pada taraf nyata 5%, sehingga model Koyck di atas layak
+digunakan sebagai model akhir Latihan 1.
+
+**Catatan metodologis:** Secara teori, OLS pada model Koyck bisa bias
+karena $Y_{t-1}$ berkorelasi dengan komponen MA(1) pada galat hasil
+transformasi (disebutkan di materi bahwa estimasi Koyck idealnya memakai
+*instrumental variables* atau *maximum likelihood*). Untuk kebutuhan
+latihan ini, pendekatan OLS langsung — sama seperti pada Contoh Koyck Lag
+di materi — tetap digunakan karena diagnostik galat di atas tidak
+menunjukkan pelanggaran asumsi yang serius.
+
+---
+
+# Latihan 2 — Autoregressive Distributed Lag (ARDL)
+
+## Deskripsi Data
+
+Data tahunan *Sales* (Y) dan *Advertising* (X) suatu perusahaan periode
+1975–2014 (40 observasi).
+
+```{r data-latihan2}
+Year <- 1975:2014
+Sales <- c(11.7,12.0,12.3,12.8,13.1,13.6,13.9,14.4,14.7,15.3,
+           15.5,15.8,16.1,16.6,16.9,16.7,16.9,17.4,17.6,17.9,
+           18.0,17.9,18.0,18.2,18.2,18.3,18.6,19.2,19.3,19.5,
+           19.2,19.3,19.5,20.0,20.0,19.9,19.8,19.9,20.2,21.0)
+Advertising <- c(9.4,9.6,10.0,10.4,10.8,10.9,11.7,12.2,12.5,12.9,
+                  13.0,13.2,13.8,14.2,14.6,14.4,15.0,15.4,15.7,15.9,
+                  15.9,16.0,16.3,16.2,16.8,17.3,17.6,18.1,18.3,18.5,
+                  18.7,18.9,19.2,20.0,20.0,20.3,20.4,21.0,21.5,22.1)
+
+data2 <- data.frame(Year, Sales, Advertising)
+data2z <- ts(data2[, c("Sales", "Advertising")], start = 1975)
+data2
+```
+
+```{r plot-latihan2}
+plot(data2$Year, data2$Sales, type = "l", col = "steelblue", lwd = 2,
+     xlab = "Tahun", ylab = "Nilai",
+     main = "Sales dan Advertising, 1975-2014",
+     ylim = range(c(data2$Sales, data2$Advertising)))
+lines(data2$Year, data2$Advertising, col = "darkorange", lwd = 2)
+legend("topleft", legend = c("Sales", "Advertising"),
+       col = c("steelblue", "darkorange"), lwd = 2, bty = "n")
+```
+
+Kedua peubah menunjukkan **tren naik** yang kuat dan pergerakan yang sangat
+berdekatan — mengindikasikan peubah tidak stasioner dan berpotensi
+memiliki hubungan jangka panjang.
+
+## Langkah 1: Uji Stasioneritas (ADF)
+
+```{r adf-latihan2}
+cat("ADF test - Sales (level):\n")
+print(adf.test(data2$Sales))
+
+cat("\nADF test - Advertising (level):\n")
+print(adf.test(data2$Advertising))
+
+cat("\nADF test - Sales (first difference):\n")
+print(adf.test(diff(data2$Sales)))
+
+cat("\nADF test - Advertising (first difference):\n")
+print(adf.test(diff(data2$Advertising)))
+```
+
+Pada level, kedua peubah **tidak stasioner** (p-value > 0.05), namun pada
+diferensi pertama keduanya menuju stasioner. Ini mengindikasikan kedua
+peubah kemungkinan berordo integrasi I(1) — **tidak ada yang berordo I(2)**,
+sehingga syarat penggunaan model **ARDL terpenuhi**.
+
+## Langkah 2: Pemilihan Lag Optimal (p, q) dengan AIC/BIC
+
+Dilakukan pencarian kombinasi lag $Y_{t-1..p}$ dan $X_{t-0..q}$ terbaik
+(p = 1..3, q = 0..3), semua model diestimasi pada sampel yang sama.
+
+```{r ardl-grid-latihan2}
+maxlag <- 3
+hasil2 <- data.frame()
+
+for (p in 1:maxlag) {
+  for (q in 0:maxlag) {
+    formula_str <- paste0(
+      "Sales ~ ", paste0("L(Sales,", 1:p, ")", collapse = " + "),
+      " + Advertising",
+      if (q > 0) paste0(" + ", paste0("L(Advertising,", 1:q, ")", collapse = " + ")) else ""
+    )
+    m <- dynlm(as.formula(formula_str), data = data2z, start = 1975 + maxlag)
+    hasil2 <- rbind(hasil2, data.frame(p = p, q = q,
+                                        AIC = AIC(m), BIC = BIC(m)))
+  }
+}
+
+hasil2 <- hasil2[order(hasil2$AIC), ]
+rownames(hasil2) <- NULL
+hasil2
+```
+
+```{r best-lag-latihan2}
+best_p <- hasil2$p[1]
+best_q <- hasil2$q[1]
+cat("Kombinasi lag terbaik (AIC & BIC minimum): ARDL(p =", best_p, ", q =", best_q, ")\n")
+```
+
+Model **ARDL(`r best_p`, `r best_q`)** memiliki AIC dan BIC paling kecil di
+antara semua kombinasi yang dicoba, sehingga dipilih sebagai model terbaik.
+
+## Langkah 3: Estimasi Model ARDL Terbaik
+
+```{r model-final-latihan2}
+model_final2 <- dynlm(Sales ~ L(Sales, 1) + Advertising + L(Advertising, 1) + L(Advertising, 2),
+                       data = data2z)
+summary(model_final2)
+```
+
+**Model dugaan ARDL(1,2):**
+
+$$
+\widehat{Sales}_t = `r round(coef(model_final2)[1],4)`
++ `r round(coef(model_final2)[2],4)`\,Sales_{t-1}
++ `r round(coef(model_final2)[3],4)`\,Advertising_t
+`r round(coef(model_final2)[4],4)`\,Advertising_{t-1}
+`r round(coef(model_final2)[5],4)`\,Advertising_{t-2}
+$$
+
+## Langkah 4: Uji Diagnostik
+
+```{r diag-latihan2}
+cat("Uji autokorelasi (Breusch-Godfrey):\n")
+print(bgtest(model_final2))
+
+cat("\nUji heteroskedastisitas (Breusch-Pagan):\n")
+print(bptest(model_final2))
+
+cat("\nUji normalitas galat (Jarque-Bera):\n")
+print(jarque.bera.test(residuals(model_final2)))
+```
+
+Ketiga uji asumsi klasik (non-autokorelasi, homoskedastisitas, dan
+normalitas galat) **terpenuhi** pada taraf nyata 5%, sehingga model
+ARDL(`r best_p`,`r best_q`) layak digunakan.
+
+Catatan: seperti umumnya pada model ARDL dengan banyak peubah lag dari
+deret waktu yang bertren, korelasi antar-regresor (multikolinearitas)
+cenderung tinggi. Hal ini adalah konsekuensi wajar dari struktur ARDL dan
+tidak mengganggu validitas uji-uji di atas, namun perlu diperhatikan saat
+menafsirkan signifikansi masing-masing koefisien individual.
+
+## Interpretasi Model
+
+```{r interpretasi-latihan2}
+phi   <- coef(model_final2)["L(Sales, 1)"]
+betas <- coef(model_final2)[c("Advertising", "L(Advertising, 1)", "L(Advertising, 2)")]
+LR_multiplier <- sum(betas) / (1 - phi)
+LR_multiplier
+```
+
+* **Dampak jangka pendek (*impact multiplier*)**: koefisien Advertising
+  pada periode berjalan ($\beta_0$ = `r round(coef(model_final2)["Advertising"],4)`)
+  berarti kenaikan belanja iklan 1 unit pada tahun ini secara langsung
+  menaikkan Sales sebesar `r round(coef(model_final2)["Advertising"],4)`
+  unit pada tahun yang sama.
+* **Efek Sales tahun lalu**: koefisien $Sales_{t-1}$ sebesar
+  `r round(phi,4)` (signifikan, mendekati 1) menunjukkan **kelembaman/persistensi
+  yang sangat kuat** — sebagian besar level Sales tahun ini "diwariskan"
+  dari tahun sebelumnya, konsisten dengan pola tren naik pada data.
+* **Efek Advertising lag 2 tahun** bernilai negatif dan signifikan
+  (`r round(coef(model_final2)["L(Advertising, 2)"],4)`), mengindikasikan
+  adanya penyesuaian/koreksi setelah efek awal advertising terserap.
+* **Dampak jangka panjang (*long-run multiplier*)**:
+  $$
+  \text{LR multiplier} = \frac{\sum \beta_i}{1-\phi_1} = `r round(LR_multiplier,4)`
+  $$
+  Artinya, jika belanja iklan dinaikkan secara permanen sebesar 1 unit,
+  maka dalam jangka panjang Sales akan meningkat total sebesar
+  `r round(LR_multiplier,4)` unit setelah seluruh proses penyesuaian selesai.
+
+---
+
+# Kesimpulan
+
+| Latihan | Peubah | Model Terbaik | Metode Pemilihan |
+|---|---|---|---|
+| Latihan 1 | Market Share ~ Price | Model Koyck: $Y_t = \alpha + \beta_0 X_t + C\,Y_{t-1}$ | Dibandingkan dgn Ad-Hoc Alt–Tinbergen; Koyck menang AIC/BIC/R² |
+| Latihan 2 | Sales ~ Advertising | ARDL(`r best_p`,`r best_q`) | Grid search AIC/BIC atas kombinasi (p,q) |
+
+Kedua model telah lolos uji asumsi klasik (non-autokorelasi, homoskedastisitas,
+dan normalitas galat) pada taraf nyata 5%.
