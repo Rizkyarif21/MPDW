@@ -1,0 +1,288 @@
+---
+title: "Latihan 1 — Model Regresi Deret Waktu dengan Peubah Lag"
+subtitle: "STA1341 Metode Peramalan Deret Waktu — Market Share vs Price"
+author: "Rizky Arif Wicaksono (M0401241054)"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+    number_sections: true
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+library(dLagM)
+library(MLmetrics)
+library(lmtest)
+library(dynlm)
+```
+
+# Soal
+
+> Misalkan terdapat set data pangsa pasar selama 20 periode dari suatu
+> produk pasta gigi. Lakukan pemodelan *distributed lag* dari pangsa
+> pasar (Y) terhadap harga (X). Temukan model terbaik!
+
+Alur pengerjaan mengikuti tahapan praktikum: **impor data → bagi
+train/test → bangun beberapa model (Koyck, DLM, ARDL) → cari lag/orde
+optimum untuk tiap model → forecast pada data test → bandingkan akurasi
+via MAPE → pilih model terbaik**.
+
+# Impor Data
+
+```{r data}
+Period      <- 1:20
+MarketShare <- c(3.63, 4.20, 3.33, 4.54, 2.89, 4.87, 4.90, 5.29, 6.18, 7.20,
+                  7.25, 6.09, 6.80, 8.65, 8.43, 8.29, 7.18, 7.90, 8.45, 8.23)
+Price       <- c(0.97, 0.95, 0.99, 0.91, 0.98, 0.90, 0.89, 0.86, 0.85, 0.82,
+                  0.79, 0.83, 0.81, 0.77, 0.76, 0.80, 0.83, 0.79, 0.76, 0.78)
+
+data1 <- data.frame(Period, MarketShare, Price)
+str(data1)
+data1
+```
+
+```{r plot-raw}
+plot(data1$Period, data1$MarketShare, type = "l", col = "steelblue", lwd = 2,
+     xlab = "Periode", ylab = "Market Share", main = "Market Share vs Waktu")
+plot(data1$Price, data1$MarketShare, pch = 19, col = "darkred",
+     xlab = "Price", ylab = "Market Share", main = "Market Share vs Price")
+```
+
+Market share cenderung naik ketika price turun — hubungan negatif, sesuai
+teori ekonomi.
+
+# Pembagian Data (Train/Test)
+
+Data dibagi 75:25 — 15 periode pertama untuk *training*, 5 periode
+terakhir untuk *testing* (menguji akurasi peramalan).
+
+```{r split}
+train <- data1[1:15, ]
+test  <- data1[16:20, ]
+train.ts <- ts(train)
+test.ts  <- ts(test)
+data.ts  <- ts(data1)
+```
+
+* **Distributed lag model**: Y dipengaruhi oleh lag dari X ($X_{t-1}, X_{t-2}, \dots$)
+* **Autoregressive model**: Y dipengaruhi oleh lag dirinya sendiri ($Y_{t-1}, \dots$) dan X sekarang
+
+# Model Koyck
+
+```{r koyck}
+model.koyck <- koyckDlm(x = train$Price, y = train$MarketShare)
+summary(model.koyck)
+AIC(model.koyck); BIC(model.koyck)
+```
+
+```{r koyck-forecast}
+fore.koyck <- forecast(model = model.koyck, x = test$Price, h = 5)
+fore.koyck
+mape.koyck <- MAPE(fore.koyck$forecasts, test$MarketShare)
+mape.koyck
+GoF(model.koyck)
+```
+
+# Regression with Distributed Lag (DLM)
+
+## Model dasar (q = 2)
+
+```{r dlm-baseline}
+model.dlm <- dlm(formula = MarketShare ~ Price, data = train, q = 2)
+summary(model.dlm)
+fore.dlm <- forecast(model = model.dlm, x = test$Price, h = 5)
+mape.dlm <- MAPE(fore.dlm$forecasts, test$MarketShare)
+mape.dlm
+```
+
+## Lag Optimum
+
+Karena datanya kecil (n = 20), pencarian dibatasi hingga q maksimum = 4
+agar derajat bebas model tetap memadai.
+
+```{r dlm-optimum}
+opt.dlm <- finiteDLMauto(formula = MarketShare ~ Price, data = data.frame(train),
+                          q.min = 1, q.max = 4, model.type = "dlm",
+                          error.type = "AIC", trace = TRUE)
+opt.dlm
+q.opt <- as.numeric(rownames(opt.dlm)[which.min(opt.dlm$AIC)])
+cat("Lag optimum (AIC minimum): q =", q.opt, "\n")
+```
+
+```{r dlm-optimum-fit}
+model.dlm2 <- dlm(formula = MarketShare ~ Price, data = train, q = q.opt)
+summary(model.dlm2)
+fore.dlm2 <- forecast(model = model.dlm2, x = test$Price, h = 5)
+mape.dlm2 <- MAPE(fore.dlm2$forecasts, test$MarketShare)
+mape.dlm2
+```
+
+# Model Autoregressive Distributed Lag (ARDL)
+
+## Model dasar (p = 1, q = 1)
+
+```{r ardl-baseline}
+model.ardl <- ardlDlm(formula = MarketShare ~ Price, data = train, p = 1, q = 1)
+summary(model.ardl)
+fore.ardl <- forecast(model = model.ardl, x = test$Price, h = 5)
+mape.ardl <- MAPE(fore.ardl$forecasts, test$MarketShare)
+mape.ardl
+```
+
+## Orde Optimum
+
+Pencarian juga dibatasi (`max.p = 3`, `max.q = 3`) mengingat sampel yang
+kecil.
+
+```{r ardl-optimum}
+opt.ardl <- ardlBoundOrders(data = data.frame(data1), ic = "AIC",
+                             formula = MarketShare ~ Price, max.p = 3, max.q = 3)
+opt.ardl
+p.opt <- as.numeric(opt.ardl$p["Price"])
+q.opt.ardl <- opt.ardl$q
+cat("Orde optimum (AIC minimum): p =", p.opt, ", q =", q.opt.ardl, "\n")
+```
+
+```{r ardl-optimum-fit}
+model.ardl2 <- ardlDlm(formula = MarketShare ~ Price, data = train, p = p.opt, q = q.opt.ardl)
+summary(model.ardl2)
+fore.ardl2 <- forecast(model = model.ardl2, x = test$Price, h = 5)
+mape.ardl2 <- MAPE(fore.ardl2$forecasts, test$MarketShare)
+mape.ardl2
+```
+
+# Pemodelan Setara dengan `dynlm` (untuk Uji Diagnostik)
+
+Fungsi `koyckDlm`/`dlm`/`ardlDlm` tidak menyediakan uji diagnostik
+langsung, sehingga digunakan `dynlm` dengan spesifikasi yang setara untuk
+menjalankan uji asumsi klasik dan *encompassing test*.
+
+```{r dynlm-versions}
+cons_lm1 <- dynlm(MarketShare ~ Price + L(Price), data = train.ts)               # DLM q=1
+cons_lm2 <- dynlm(MarketShare ~ Price + L(MarketShare), data = train.ts)         # ARDL p=1,q=0 (Koyck-like)
+cons_lm3 <- dynlm(MarketShare ~ Price + L(Price) + L(MarketShare), data = train.ts) # ARDL p=1,q=1
+cons_lm4 <- dynlm(MarketShare ~ Price + L(Price) + L(Price, 2), data = train.ts)    # DLM q=2
+
+cat("SSE cons_lm1 (DLM q=1)  :", deviance(cons_lm1), "\n")
+cat("SSE cons_lm2 (ARDL 1,0) :", deviance(cons_lm2), "\n")
+cat("SSE cons_lm3 (ARDL 1,1) :", deviance(cons_lm3), "\n")
+cat("SSE cons_lm4 (DLM q=2)  :", deviance(cons_lm4), "\n")
+```
+
+## Encompassing Test
+
+```{r encomptest}
+encomptest(cons_lm1, cons_lm2)
+```
+
+Model 1 (DLM, `Price + L(Price)`) sudah cukup memadai — menambahkan lag
+$Y$ (Model 2) tidak memberikan peningkatan signifikan (p > 0.05 pada baris
+M1 vs ME), begitu pula sebaliknya.
+
+## Uji Autokorelasi (Durbin-Watson)
+
+```{r dwtest}
+dwtest(cons_lm1); dwtest(cons_lm2); dwtest(cons_lm3); dwtest(cons_lm4)
+```
+
+## Uji Heteroskedastisitas (Breusch-Pagan)
+
+```{r bptest}
+bptest(cons_lm1); bptest(cons_lm2); bptest(cons_lm3); bptest(cons_lm4)
+```
+
+## Uji Normalitas (Shapiro-Wilk)
+
+```{r shapirotest}
+shapiro.test(residuals(cons_lm1))
+shapiro.test(residuals(cons_lm2))
+shapiro.test(residuals(cons_lm3))
+shapiro.test(residuals(cons_lm4))
+```
+
+Semua model (`cons_lm1` s.d. `cons_lm4`) lolos ketiga uji asumsi klasik
+pada taraf nyata 5% (tidak ada autokorelasi, homoskedastis, residual
+menyebar normal).
+
+# Perbandingan Model
+
+```{r perbandingan}
+akurasi <- data.frame(
+  Model = c("Koyck",
+            "DLM (q=2)",
+            paste0("DLM (q=", q.opt, ", optimum)"),
+            "ARDL (1,1)",
+            paste0("ARDL (", p.opt, ",", q.opt.ardl, ", optimum)")),
+  AIC = c(AIC(model.koyck), AIC(model.dlm), AIC(model.dlm2), AIC(model.ardl), AIC(model.ardl2)),
+  BIC = c(BIC(model.koyck), BIC(model.dlm), BIC(model.dlm2), BIC(model.ardl), BIC(model.ardl2)),
+  MAPE_test = round(c(mape.koyck, mape.dlm, mape.dlm2, mape.ardl, mape.ardl2), 4)
+)
+akurasi[order(akurasi$MAPE_test), ]
+```
+
+Berdasarkan **MAPE data test** (kriteria akurasi peramalan luar-sampel),
+model **Koyck** memiliki nilai MAPE terkecil
+(`r round(mape.koyck,4)`), sehingga dipilih sebagai **model terbaik**
+untuk memprediksi market share berdasarkan price — meskipun model DLM
+dengan lag optimum memberikan AIC/BIC (kecocokan dalam-sampel) yang lebih
+kecil. Hal ini wajar: AIC/BIC mengukur kecocokan pada data training,
+sedangkan MAPE mengukur akurasi sesungguhnya pada data baru (test) — dan
+untuk tujuan peramalan, akurasi luar-sampel lebih diutamakan.
+
+## Plot Perbandingan Forecast vs Aktual
+
+```{r plot-forecast}
+plot(test$Price, test$MarketShare, type = "b", col = "black", pch = 16,
+     ylim = range(c(test$MarketShare, fore.koyck$forecasts, fore.dlm$forecasts,
+                     fore.dlm2$forecasts, fore.ardl$forecasts)),
+     xlab = "Price (data test)", ylab = "Market Share",
+     main = "Perbandingan Forecast vs Aktual")
+points(test$Price, fore.koyck$forecasts, col = "red"); lines(test$Price, fore.koyck$forecasts, col = "red")
+points(test$Price, fore.dlm$forecasts, col = "blue"); lines(test$Price, fore.dlm$forecasts, col = "blue")
+points(test$Price, fore.dlm2$forecasts, col = "orange"); lines(test$Price, fore.dlm2$forecasts, col = "orange")
+points(test$Price, fore.ardl$forecasts, col = "darkgreen"); lines(test$Price, fore.ardl$forecasts, col = "darkgreen")
+legend("topright", c("Aktual", "Koyck", "DLM(q=2)", paste0("DLM(q=",q.opt,")"), "ARDL(1,1)"),
+       lty = 1, pch = c(16, NA, NA, NA, NA),
+       col = c("black", "red", "blue", "orange", "darkgreen"), cex = 0.75)
+```
+
+# Model Terbaik & Interpretasi
+
+```{r model-terbaik}
+koyck_coefs <- coef(model.koyck)
+koyck_coefs
+alpha_hat <- koyck_coefs["(Intercept)"]
+phi_hat   <- koyck_coefs["Y.1"]
+beta_hat  <- koyck_coefs["X.t"]
+LR_mult1  <- beta_hat / (1 - phi_hat)
+c(alpha = alpha_hat, phi = phi_hat, beta0 = beta_hat, LR_multiplier = LR_mult1)
+```
+
+**Model Koyck terbaik:**
+
+$$
+\hat{Y}_t = `r round(alpha_hat,3)` `r round(beta_hat,3)`\,X_t + `r round(phi_hat,3)`\,Y_{t-1}
+$$
+
+**Interpretasi:**
+
+* **Dampak jangka pendek** ($\beta_0$ = `r round(beta_hat,3)`): kenaikan
+  harga 1 unit langsung menurunkan market share sebesar
+  `r round(abs(beta_hat),3)` poin pada periode yang sama.
+* **Koefisien $Y_{t-1}$** ($\phi$ = `r round(phi_hat,3)`) menunjukkan
+  proporsi efek market share periode lalu yang masih terbawa ke periode
+  ini (kelembaman/inersia pasar).
+* **Dampak jangka panjang (*long-run multiplier*)**:
+  $$
+  \frac{\beta_0}{1-\phi} = \frac{`r round(beta_hat,3)`}{1-`r round(phi_hat,3)`} = `r round(LR_mult1,3)`
+  $$
+  Jika kenaikan harga 1 unit dipertahankan permanen, total penurunan
+  market share dalam jangka panjang adalah `r round(abs(LR_mult1),3)` poin.
+* Model ini juga memberikan **MAPE data test terkecil**
+  (`r round(mape.koyck*100,2)`%) di antara seluruh model yang dicoba
+  (Koyck, DLM, ARDL), menandakan performa peramalan luar-sampel yang
+  paling baik.

@@ -1,0 +1,252 @@
+---
+title: "Latihan 2 — Autoregressive Distributed Lag (ARDL)"
+subtitle: "STA1341 Metode Peramalan Deret Waktu — Sales vs Advertising"
+author: "Rizky Arif Wicaksono (M0401241054)"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+    number_sections: true
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+library(dLagM)
+library(MLmetrics)
+library(lmtest)
+library(dynlm)
+library(tseries)
+```
+
+# Soal
+
+> Lakukan pemodelan **ARDL** yang sesuai menggunakan data Sales dan
+> Advertising tahun 1975–2014, dan temukan model terbaik!
+
+Alur pengerjaan mengikuti tahapan praktikum: **impor data → cek
+stasioneritas → bagi train/test → bangun ARDL dasar → cari orde optimum
+→ forecast pada data test → uji diagnostik → pilih model terbaik**.
+
+# Impor Data
+
+```{r data}
+Year        <- 1975:2014
+Sales       <- c(11.7,12.0,12.3,12.8,13.1,13.6,13.9,14.4,14.7,15.3,
+                  15.5,15.8,16.1,16.6,16.9,16.7,16.9,17.4,17.6,17.9,
+                  18.0,17.9,18.0,18.2,18.2,18.3,18.6,19.2,19.3,19.5,
+                  19.2,19.3,19.5,20.0,20.0,19.9,19.8,19.9,20.2,21.0)
+Advertising <- c(9.4,9.6,10.0,10.4,10.8,10.9,11.7,12.2,12.5,12.9,
+                  13.0,13.2,13.8,14.2,14.6,14.4,15.0,15.4,15.7,15.9,
+                  15.9,16.0,16.3,16.2,16.8,17.3,17.6,18.1,18.3,18.5,
+                  18.7,18.9,19.2,20.0,20.0,20.3,20.4,21.0,21.5,22.1)
+
+data2 <- data.frame(Year, Sales, Advertising)
+str(data2)
+data2
+```
+
+```{r plot-raw}
+plot(data2$Year, data2$Sales, type = "l", col = "steelblue", lwd = 2,
+     xlab = "Tahun", ylab = "Nilai", main = "Sales dan Advertising, 1975-2014",
+     ylim = range(c(data2$Sales, data2$Advertising)))
+lines(data2$Year, data2$Advertising, col = "darkorange", lwd = 2)
+legend("topleft", legend = c("Sales", "Advertising"),
+       col = c("steelblue", "darkorange"), lwd = 2, bty = "n")
+```
+
+Kedua peubah menunjukkan tren naik yang kuat dan bergerak berdekatan.
+
+# Cek Stasioneritas (ADF)
+
+```{r adf}
+adf.test(data2$Sales)
+adf.test(data2$Advertising)
+adf.test(diff(data2$Sales))
+adf.test(diff(data2$Advertising))
+```
+
+Pada level, kedua peubah **tidak stasioner** (p > 0.05); setelah
+diferensi pertama, keduanya menuju stasioner. Artinya kedua peubah
+kemungkinan I(1) dan **tidak ada yang berordo I(2)**, sehingga syarat
+pemakaian **model ARDL terpenuhi**.
+
+# Pembagian Data (Train/Test)
+
+Data dibagi 75:25 — 30 tahun pertama (1975–2004) untuk *training*, 10
+tahun terakhir (2005–2014) untuk *testing*.
+
+```{r split}
+train <- data2[1:30, ]
+test  <- data2[31:40, ]
+```
+
+# Model ARDL
+
+## Model dasar (p = 1, q = 1)
+
+```{r ardl-baseline}
+model.ardl <- ardlDlm(formula = Sales ~ Advertising, data = train, p = 1, q = 1)
+summary(model.ardl)
+fore.ardl <- forecast(model = model.ardl, x = test$Advertising, h = 10)
+mape.ardl <- MAPE(fore.ardl$forecasts, test$Sales)
+mape.ardl
+```
+
+## Pencarian Orde Optimum (p, q)
+
+Pencarian orde ARDL menggunakan `ardlBoundOrders()` — kriteria AIC — pada
+seluruh data, dibatasi `max.p = max.q = 5` agar derajat bebas tetap
+memadai untuk n = 40.
+
+```{r ardl-optimum}
+opt.ardl <- ardlBoundOrders(data = data.frame(data2), ic = "AIC",
+                             formula = Sales ~ Advertising, max.p = 5, max.q = 5)
+opt.ardl
+p.opt <- as.numeric(opt.ardl$p["Advertising"])
+q.opt <- opt.ardl$q
+cat("Orde optimum (AIC minimum): p =", p.opt, ", q =", q.opt, "\n")
+```
+
+**Catatan penting soal notasi:** pada fungsi `ardlDlm()` dari package
+`dLagM`, argumen **`p` adalah orde lag untuk peubah independen X**
+(Advertising), sedangkan **`q` adalah orde autoregresif untuk peubah
+dependen Y** (Sales) — ini **kebalikan** dari notasi $ARDL(p,q)$ pada
+rumus umum di slide perkuliahan ($Y_t = \alpha + \phi_1 Y_{t-1} + \dots +
+\phi_p Y_{t-p} + \beta_0 X_t + \dots + \beta_q X_{t-q} + \varepsilon_t$,
+di mana $p$ = orde AR untuk Y dan $q$ = orde DL untuk X). Supaya tidak
+ambigu, hasil di atas berarti: **Advertising dimasukkan hingga lag ke-`r p.opt`**,
+dan **Sales dimasukkan hingga lag ke-`r q.opt`** (AR).
+
+```{r ardl-optimum-fit}
+model.ardl2 <- ardlDlm(formula = Sales ~ Advertising, data = train, p = p.opt, q = q.opt)
+summary(model.ardl2)
+fore.ardl2 <- forecast(model = model.ardl2, x = test$Advertising, h = 10)
+mape.ardl2 <- MAPE(fore.ardl2$forecasts, test$Sales)
+mape.ardl2
+```
+
+Perhatikan bahwa pada model ARDL(`r p.opt`,`r q.opt`) sebagian besar
+koefisien lag *Advertising* individual tidak signifikan — ini gejala
+**multikolinearitas** yang wajar terjadi karena banyak lag dari peubah
+yang sama, saling berkorelasi tinggi (data bertren). Meski demikian,
+model tetap valid untuk peramalan (uji-F keseluruhan tetap signifikan).
+
+## Perbandingan Sebagai Pembanding: DLM & Koyck
+
+Sebagai pembanding tambahan (bukan diminta soal, tapi untuk melengkapi
+kerangka *distributed lag* secara umum):
+
+```{r pembanding}
+model.koyck <- koyckDlm(x = train$Advertising, y = train$Sales)
+fore.koyck  <- forecast(model = model.koyck, x = test$Advertising, h = 10)
+mape.koyck  <- MAPE(fore.koyck$forecasts, test$Sales)
+
+model.dlm   <- dlm(formula = Sales ~ Advertising, data = train, q = 2)
+fore.dlm    <- forecast(model = model.dlm, x = test$Advertising, h = 10)
+mape.dlm    <- MAPE(fore.dlm$forecasts, test$Sales)
+
+cat("MAPE Koyck   :", mape.koyck, "\n")
+cat("MAPE DLM(q=2):", mape.dlm, "\n")
+```
+
+# Uji Diagnostik (Model ARDL Terpilih)
+
+`dLagM::ardlDlm()` pada dasarnya membungkus `dynlm`, sehingga objek model
+dapat langsung diuji dengan `lmtest`.
+
+```{r diagnostik}
+dwtest(model.ardl2$model)
+bptest(model.ardl2$model)
+shapiro.test(residuals(model.ardl2$model))
+```
+
+Ketiga uji asumsi klasik (non-autokorelasi, homoskedastisitas, normalitas
+galat) **terpenuhi** pada taraf nyata 5%, sehingga model ARDL di atas
+layak digunakan.
+
+# Perbandingan Model & Pemilihan Model Terbaik
+
+```{r perbandingan}
+akurasi <- data.frame(
+  Model = c("ARDL (1,1)", paste0("ARDL (", p.opt, ",", q.opt, ", optimum)"),
+            "Koyck (pembanding)", "DLM q=2 (pembanding)"),
+  AIC = c(AIC(model.ardl), AIC(model.ardl2), AIC(model.koyck), AIC(model.dlm)),
+  BIC = c(BIC(model.ardl), BIC(model.ardl2), BIC(model.koyck), BIC(model.dlm)),
+  MAPE_test = round(c(mape.ardl, mape.ardl2, mape.koyck, mape.dlm), 5)
+)
+akurasi[order(akurasi$MAPE_test), ]
+```
+
+## Plot Perbandingan Forecast vs Aktual
+
+```{r plot-forecast}
+plot(test$Year, test$Sales, type = "b", col = "black", pch = 16,
+     ylim = range(c(test$Sales, fore.ardl$forecasts, fore.ardl2$forecasts,
+                     fore.koyck$forecasts)),
+     xlab = "Tahun (data test)", ylab = "Sales",
+     main = "Perbandingan Forecast vs Aktual - ARDL")
+points(test$Year, fore.ardl$forecasts, col = "darkgreen"); lines(test$Year, fore.ardl$forecasts, col = "darkgreen")
+points(test$Year, fore.ardl2$forecasts, col = "purple"); lines(test$Year, fore.ardl2$forecasts, col = "purple")
+points(test$Year, fore.koyck$forecasts, col = "red"); lines(test$Year, fore.koyck$forecasts, col = "red")
+legend("topleft", c("Aktual", "ARDL(1,1)", paste0("ARDL(",p.opt,",",q.opt,")"), "Koyck"),
+       lty = 1, pch = c(16, NA, NA, NA),
+       col = c("black", "darkgreen", "purple", "red"), cex = 0.75)
+```
+
+Berdasarkan **MAPE data test**, model **ARDL(`r p.opt`,`r q.opt`)**
+memberikan akurasi peramalan luar-sampel terbaik (MAPE =
+`r round(mape.ardl2*100,2)`%), sehingga dipilih sebagai **model ARDL
+terbaik** untuk data Sales–Advertising ini.
+
+# Model Terbaik & Interpretasi
+
+```{r model-terbaik}
+coefs <- coef(model.ardl2$model)
+coefs
+
+# nama koefisien mengikuti pola "<nama_Y>.<lag>" dan "<nama_X>.t"/"<nama_X>.<lag>"
+phi_names  <- names(coefs)[grepl("^Sales", names(coefs))]
+beta_names <- names(coefs)[grepl("^Advertising", names(coefs))]
+
+phi   <- sum(coefs[phi_names])          # jumlah seluruh koefisien lag Sales (AR)
+betas <- coefs[beta_names]              # seluruh koefisien Advertising (lag 0..p)
+LR_multiplier <- sum(betas) / (1 - phi)
+
+cat("Koefisien lag Sales (AR):\n"); print(coefs[phi_names])
+cat("\nKoefisien Advertising (lag 0..p):\n"); print(betas)
+cat("\nJumlah phi (AR):", phi, "\n")
+cat("Long-run multiplier:", LR_multiplier, "\n")
+```
+
+**Model dugaan ARDL (Advertising lag 0–`r p.opt`, Sales lag AR 1–`r q.opt`):**
+
+$$
+\widehat{Sales}_t = `r round(coefs["(Intercept)"],4)` + \sum_{i=1}^{`r q.opt`}\phi_i\,Sales_{t-i} + \sum_{j=0}^{`r p.opt`}\beta_j\,Advertising_{t-j}
+$$
+
+(koefisien lengkap lihat output `summary(model.ardl2)` di atas; `p` di
+sini mengikuti konvensi `dLagM` = orde lag Advertising, `q` = orde AR
+Sales — lihat catatan notasi pada bagian sebelumnya)
+
+**Interpretasi:**
+
+* **Koefisien $Sales_{t-1}$** (`r round(phi,4)`, signifikan) menunjukkan
+  **persistensi/kelembaman yang sangat kuat** — sebagian besar level
+  Sales tahun ini "diwariskan" dari tahun sebelumnya, konsisten dengan
+  pola tren naik pada data.
+* Koefisien lag-lag *Advertising* secara individual banyak yang tidak
+  signifikan akibat multikolinearitas antar-lag, namun **secara
+  bersama-sama** (uji F) tetap signifikan mempengaruhi Sales.
+* **Dampak jangka panjang (*long-run multiplier*)**:
+  $$
+  \text{LR multiplier} = \frac{\sum \beta_j}{1-\sum\phi_i} = `r round(LR_multiplier,4)`
+  $$
+  Artinya, jika belanja iklan dinaikkan secara permanen sebesar 1 unit,
+  Sales akan meningkat total sebesar `r round(LR_multiplier,4)` unit
+  dalam jangka panjang setelah seluruh proses penyesuaian selesai.
+* Model ini memberikan **MAPE data test terkecil** di antara seluruh
+  model ARDL yang dicoba, menandakan performa peramalan luar-sampel yang
+  paling baik untuk data ini.
